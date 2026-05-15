@@ -10,5 +10,6 @@
             "database": "vectordbpg",
             "username": "postgres"
         }
-    ]
+    ],
+    "java.configuration.updateBuildConfiguration": "interactive"
 }
