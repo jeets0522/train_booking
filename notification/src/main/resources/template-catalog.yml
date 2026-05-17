@@ -1,0 +1,73 @@
+# Notification template catalog.
+#
+# Each entry maps an internal template key (used in code) to provider-specific
+# template identifiers. Template content itself lives in the provider (SES /
+# SendGrid for email, Meta for WhatsApp, telco DLT registration for India SMS).
+#
+# This service does NOT render template bodies for templated channels --- it
+# passes the provider template ID + variables and lets the provider merge.
+# The one exception is FREE_TEXT SMS, where 'body' below is rendered locally
+# with simple {{var}} substitution.
+
+templates:
+
+  # ----- EMAIL -----------------------------------------------------------
+  EMAIL_VERIFICATION:
+    channel: EMAIL
+    providers:
+      ses:
+        template_name: notification_email_verification_v1
+      sendgrid:
+        template_id: d-PLACEHOLDER-EMAIL-VERIFICATION
+    variables:
+      - otp
+      - firstName
+      - expiresAt
+
+  WELCOME_EMAIL:
+    channel: EMAIL
+    providers:
+      ses:
+        template_name: notification_welcome_v1
+      sendgrid:
+        template_id: d-PLACEHOLDER-WELCOME
+    variables:
+      - firstName
+
+  # ----- SMS (regulated -- India / DLT) ---------------------------------
+  # Reserved for when SMS channel is implemented. Sample entry shown.
+  #
+  # PHONE_OTP_IN:
+  #   channel: SMS
+  #   mode: TEMPLATED
+  #   providers:
+  #     twilio:
+  #       content_sid: HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  #       dlt_template_id: "1707169..."
+  #       dlt_entity_id:   "1101234..."
+  #       sender_id:       "TRNBOK"
+  #     sns:
+  #       approved_body: "Your verification code is {#var#}. Valid {#var#} min. - TRNBOK"
+  #   variables: [otp, expiresMinutes]
+
+  # ----- SMS (free text -- international) -------------------------------
+  # PHONE_OTP_GLOBAL:
+  #   channel: SMS
+  #   mode: FREE_TEXT
+  #   body: "Your verification code is {{otp}}. Valid for {{expiresMinutes}} minutes."
+  #   variables: [otp, expiresMinutes]
+
+  # ----- WHATSAPP --------------------------------------------------------
+  # BOOKING_CONFIRMATION:
+  #   channel: WHATSAPP
+  #   providers:
+  #     meta:    { template_name: booking_confirmation_v1, language: en_US }
+  #     twilio:  { content_sid: HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx }
+  #   variables: [pnr, trainName, date]
+
+  # ----- PUSH ------------------------------------------------------------
+  # BOOKING_CONFIRMED_PUSH:
+  #   channel: PUSH
+  #   title_key: push.booking_confirmed.title
+  #   body_key:  push.booking_confirmed.body
+  #   variables: [pnr, trainName]
