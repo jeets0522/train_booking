@@ -81,8 +81,8 @@ com.trainbooking.accounts
 │   ├── VerificationException.java
 │   └── GlobalExceptionHandler.java   — @RestControllerAdvice
 ├── kafka/
-│   ├── events/                       — EmailVerificationEvent, WelcomeEmailEvent, PhoneOtpEvent
-│   └── NotificationProducer.java     — sends events to Kafka topics
+│   ├── events/domain/                — sealed DomainEvent + UserRegistered, EmailVerificationRequested, PhoneOtpRequested (eventType discriminator in JSON)
+│   └── DomainEventPublisher.java     — publishes domain facts to the account.events topic
 ├── repository/                       — Spring Data JPA repositories
 ├── security/
 │   ├── JwtProperties.java            — @ConfigurationProperties(prefix="jwt")
@@ -184,8 +184,13 @@ com.trainbooking.notification
 │   ├── ProviderException.java
 │   └── GlobalExceptionHandler.java
 ├── kafka/
-│   ├── events/                         — Mirrored POJOs from accounts (EmailVerificationEvent, WelcomeEmailEvent, PhoneOtpEvent)
-│   └── NotificationConsumer.java       — @KafkaListener per topic → NotificationRequest → NotificationService.send()
+│   ├── events/domain/                  — Mirrored sealed DomainEvent + subtypes from accounts (byte-compatible)
+│   ├── NotificationCommand.java        — record: resolved delivery instruction (channel, priority, templateKey, variables)
+│   ├── NotificationCommandPublisher.java — routes a command to its (channel, priority) delivery topic
+│   ├── DomainEventConsumer.java        — @KafkaListener on account.events → NotificationPolicy → publish commands
+│   └── DeliveryConsumer.java           — @KafkaListener per delivery topic → NotificationRequest → NotificationService.send()
+├── policy/
+│   └── NotificationPolicy.java         — maps a DomainEvent → 0..n NotificationCommands (the only event→template mapping)
 ├── repository/                         — Spring Data JPA repos
 ├── template/
 │   ├── TemplateCatalog.java            — loads template-catalog.yml at startup
@@ -238,15 +243,29 @@ Tables: `notifications`, `suppression_list`, `delivery_events`
 
 DDL: `notification/db/sql/db.sql` (run after `accounts/db/sql/db.sql`). `spring.jpa.hibernate.ddl-auto=none`.
 
-### Kafka topics consumed
+### Kafka topics & flow
 
-Producer: `accounts.kafka.NotificationProducer`. Topic names must match `application.properties` on both sides.
+Two-stage delivery. Topic names must match `application.properties` on both sides; all topics are auto-created via `NewTopic` beans on startup.
 
-| Topic | Event | v1 status |
+**Stage 1 — inbound domain events.** `accounts.kafka.DomainEventPublisher` emits *facts* (it knows nothing about templates/channels) to a single topic:
+
+| Topic | Event types (sealed `DomainEvent`, `eventType` discriminator) | v1 status |
 |---|---|---|
-| `notification.email.verification` | `EmailVerificationEvent` | ✓ consumed |
-| `notification.email.welcome` | `WelcomeEmailEvent` | ✓ consumed |
-| `notification.sms.otp` | `PhoneOtpEvent` | POJO mirrored, listener not yet wired (SMS channel deferred) |
+| `account.events` | `UserRegistered`, `EmailVerificationRequested`, `PhoneOtpRequested` | ✓ consumed by `DomainEventConsumer` |
+
+`DomainEventConsumer` runs `NotificationPolicy.apply(event)` to decide which notifications result, then publishes a `NotificationCommand` per notification.
+
+**Stage 2 — channel × priority delivery topics.** `NotificationCommandPublisher` routes by `(channel, priority)`; `DeliveryConsumer` has one `@KafkaListener` per topic → `NotificationService.send()`:
+
+| Topic | Routed when | v1 status |
+|---|---|---|
+| `notification.email.transactional` | EMAIL + TRANSACTIONAL (e.g. EMAIL_VERIFICATION) | ✓ active |
+| `notification.email.bulk` | EMAIL + BULK (e.g. WELCOME_EMAIL) | ✓ active |
+| `notification.sms.transactional` | SMS + TRANSACTIONAL (PhoneOtpRequested) | listener wired; template reserved (SMS channel deferred) |
+
+Adding a new notification = a `templateKey` + a `template-catalog.yml` entry + one line in `NotificationPolicy`. No new topic/listener/event type.
+
+Idempotency: each domain event carries a unique `eventId`; the command id is `nameUUIDFromBytes(eventId + ":" + templateKey)`, so redelivery maps to the same notification row and `NotificationService.send()` short-circuits.
 
 Cross-service event POJOs are duplicated (not in a shared module). Field structure must stay byte-compatible.
 
@@ -254,7 +273,8 @@ Cross-service event POJOs are duplicated (not in a shared module). Field structu
 
 - **Provider-hosted templates.** Email templates live in SES *and* SendGrid; the service references them by ID via `template-catalog.yml`. Same pattern planned for WhatsApp (Meta-approved) and India SMS (DLT-registered). Tradeoff: every new template must be created in all providers + catalog entry; upside: non-engineers can edit copy through provider UI, and the service carries no rendering engine.
 - **Sealed `ProviderResult`** lets each provider classify outcomes as `Success`, `RetryableFailure` (channel will fail over), or `PermanentFailure` (channel aborts — failover wouldn't help for bad input). Permanent failures do NOT trip the circuit breaker; retryable ones do.
-- **Idempotent consumer.** Each Kafka event produces a deterministic UUID (e.g. `nameUUIDFromBytes("EMAIL_VERIFICATION:userId:rawToken")`) used as the notification PK. Redelivery short-circuits at `NotificationService.send()` if the notification is already SENT/DELIVERED.
+- **Two-stage delivery (domain events → commands).** Producers emit domain *facts* on `account.events`; `NotificationPolicy` (in the notification service) decides which notifications they imply and emits a `NotificationCommand` per notification onto channel × priority delivery topics. Topology is governed by transport concerns (channel, priority), not message variety — new email kinds are data (a `templateKey` + catalog + policy line), never new topics.
+- **Idempotent consumer.** Each domain event carries a unique `eventId`; the notification PK is `nameUUIDFromBytes(eventId + ":" + templateKey)` (so one event fanning out to N notifications yields N stable ids). Redelivery short-circuits at `NotificationService.send()` if the notification is already SENT/DELIVERED.
 - **Per-provider circuit breakers** named `email-{provider}` (e.g. `email-ses`). Configured globally via `notification.circuit-breaker.*` properties; metrics exposed via actuator.
 - **Suppression list** is checked before every send. Bounce / complaint events from provider webhooks auto-populate it.
 - **Webhook signature verification is NOT yet implemented** — SES (via SNS) and SendGrid endpoints currently accept any payload. Add signature checks before exposing publicly.

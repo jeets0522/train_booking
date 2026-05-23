@@ -7,9 +7,9 @@ import com.trainbooking.accounts.dto.request.VerifyEmailRequest;
 import com.trainbooking.accounts.dto.request.VerifyPhoneRequest;
 import com.trainbooking.accounts.dto.response.ApiResponse;
 import com.trainbooking.accounts.exception.VerificationException;
-import com.trainbooking.accounts.kafka.NotificationProducer;
-import com.trainbooking.accounts.kafka.events.EmailVerificationEvent;
-import com.trainbooking.accounts.kafka.events.PhoneOtpEvent;
+import com.trainbooking.accounts.kafka.DomainEventPublisher;
+import com.trainbooking.accounts.kafka.events.domain.EmailVerificationRequested;
+import com.trainbooking.accounts.kafka.events.domain.PhoneOtpRequested;
 import com.trainbooking.accounts.repository.UserRepository;
 import com.trainbooking.accounts.repository.VerificationTokenRepository;
 import com.trainbooking.accounts.util.HashUtil;
@@ -25,15 +25,15 @@ public class VerificationService {
 
     private final VerificationTokenRepository verificationTokenRepository;
     private final UserRepository userRepository;
-    private final NotificationProducer notificationProducer;
+    private final DomainEventPublisher domainEventPublisher;
 
     public VerificationService(
             VerificationTokenRepository verificationTokenRepository,
             UserRepository userRepository,
-            NotificationProducer notificationProducer) {
+            DomainEventPublisher domainEventPublisher) {
         this.verificationTokenRepository = verificationTokenRepository;
         this.userRepository = userRepository;
-        this.notificationProducer = notificationProducer;
+        this.domainEventPublisher = domainEventPublisher;
     }
 
     @Transactional
@@ -51,14 +51,12 @@ public class VerificationService {
 
         verificationTokenRepository.save(verificationToken);
 
-        EmailVerificationEvent event = new EmailVerificationEvent(
+        domainEventPublisher.publish(EmailVerificationRequested.of(
                 user.getId(),
                 user.getEmail(),
                 user.getFirstName(),
                 rawToken,
-                expiresAt
-        );
-        notificationProducer.sendEmailVerification(event);
+                expiresAt));
     }
 
     @Transactional
@@ -112,13 +110,11 @@ public class VerificationService {
 
         verificationTokenRepository.save(verificationToken);
 
-        PhoneOtpEvent event = new PhoneOtpEvent(
+        domainEventPublisher.publish(PhoneOtpRequested.of(
                 user.getId(),
                 user.getPhoneNumber(),
                 otp,
-                expiresAt
-        );
-        notificationProducer.sendPhoneOtp(event);
+                expiresAt));
     }
 
     @Transactional

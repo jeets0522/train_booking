@@ -9,8 +9,8 @@ import com.trainbooking.accounts.dto.request.RegisterRequest;
 import com.trainbooking.accounts.dto.response.ApiResponse;
 import com.trainbooking.accounts.dto.response.AuthResponse;
 import com.trainbooking.accounts.exception.AuthException;
-import com.trainbooking.accounts.kafka.NotificationProducer;
-import com.trainbooking.accounts.kafka.events.WelcomeEmailEvent;
+import com.trainbooking.accounts.kafka.DomainEventPublisher;
+import com.trainbooking.accounts.kafka.events.domain.UserRegistered;
 import com.trainbooking.accounts.repository.RefreshTokenRepository;
 import com.trainbooking.accounts.repository.RoleRepository;
 import com.trainbooking.accounts.repository.UserRepository;
@@ -39,7 +39,7 @@ public class AuthService {
     private final JwtService jwtService;
     private final JwtProperties jwtProperties;
     private final VerificationService verificationService;
-    private final NotificationProducer notificationProducer;
+    private final DomainEventPublisher domainEventPublisher;
 
     @Value("${auth.max-failed-attempts}")
     private int maxFailedAttempts;
@@ -55,7 +55,7 @@ public class AuthService {
             JwtService jwtService,
             JwtProperties jwtProperties,
             VerificationService verificationService,
-            NotificationProducer notificationProducer) {
+            DomainEventPublisher domainEventPublisher) {
         this.userRepository = userRepository;
         this.roleRepository = roleRepository;
         this.refreshTokenRepository = refreshTokenRepository;
@@ -63,7 +63,7 @@ public class AuthService {
         this.jwtService = jwtService;
         this.jwtProperties = jwtProperties;
         this.verificationService = verificationService;
-        this.notificationProducer = notificationProducer;
+        this.domainEventPublisher = domainEventPublisher;
     }
 
     @Transactional
@@ -104,13 +104,12 @@ public class AuthService {
 
         user = userRepository.save(user);
 
-        verificationService.sendEmailVerification(user);
-
-        notificationProducer.sendWelcomeEmail(new WelcomeEmailEvent(
+        domainEventPublisher.publish(UserRegistered.of(
                 user.getId(),
                 user.getEmail(),
-                user.getFirstName()
-        ));
+                user.getFirstName()));
+
+        verificationService.sendEmailVerification(user);
 
         return ApiResponse.success("Registration successful. Please verify your email.");
     }
